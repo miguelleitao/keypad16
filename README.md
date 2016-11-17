@@ -21,3 +21,30 @@ keypad16 is available in several steps that are not related to software versions
 * keypad16_a714: Added input buffer.
 
 * keypad16_a715: Added /proc interface
+
+### Sugested usage
+
+git clone https://gitbub.org/miguelleitao/keypad16
+cd keypad16
+ls
+make
+ls
+insmod keypad16_a710.ko
+lsmod
+dmesg
+mknod /dev/keypad16 c 431 0
+cat /dev/keypad16
+rmmod keypad16_a710
+#
+# Connect keypad to parallel port
+insmod keypad16_a710.ko
+lsmod
+dmesg
+mknod /dev/keypad16 c 431 0
+cat /dev/keypad16
+^c
+# press any keypad key
+cat /dev/keypad16 |./tcode
+# press any keypad key
+^c
+rmmod keypad16_a710
