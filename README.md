@@ -31,13 +31,16 @@ ls
 # compile all
 make
 ls
+
 # try step 0
 insmod keypad16_a710.ko
 lsmod
 dmesg
 mknod /dev/keypad16 c 431 0
 cat /dev/keypad16
+^c 
 rmmod keypad16_a710
+
 # try step 1
 # Connect keypad to parallel port
 insmod keypad16_a711.ko
@@ -50,18 +53,21 @@ cat /dev/keypad16 |./tcode
 # press some keypad keys
 ^c
 rmmod keypad16_a711
+
 # try step 2
 insmod keypad16_a712.ko
 cat /dev/keypad16
 # press some keypad keys
 ^c
 rmmod keypad16_a712
+
 # try step 3
 insmod keypad16_a713.ko
 cat /dev/keypad16
 # press and hold some keypad keys
 ^c
 rmmod keypad16_a713
+
 # try step 4
 insmod keypad16_a714.ko
 # press some keypad keys
@@ -69,6 +75,7 @@ cat /dev/keypad16
 # press some keypad keys
 ^c
 rmmod keypad16_a714
+
 # try step 5
 insmod keypad16_a715.ko
 cat /proc/keypad16/table
