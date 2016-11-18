@@ -23,28 +23,31 @@ keypad16 is available in several steps that are not related to software versions
 * keypad16_a715: Added /proc interface
 
 ### Sugested usage
-
-git clone https://gitbub.org/miguelleitao/keypad16
+```
+# import all
+git clone https://github.com/miguelleitao/keypad16.git
 cd keypad16
 ls
+# compile all
 make
 ls
+# try step 0
 insmod keypad16_a710.ko
 lsmod
 dmesg
 mknod /dev/keypad16 c 431 0
 cat /dev/keypad16
 rmmod keypad16_a710
-#
+# try step 1
 # Connect keypad to parallel port
-insmod keypad16_a710.ko
+insmod keypad16_a711.ko
 lsmod
 dmesg
-mknod /dev/keypad16 c 431 0
 cat /dev/keypad16
-^c
 # press any keypad key
+^c
 cat /dev/keypad16 |./tcode
 # press any keypad key
 ^c
-rmmod keypad16_a710
+rmmod keypad16_a711
+```
