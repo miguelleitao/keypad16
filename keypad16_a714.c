@@ -6,6 +6,7 @@
 #include <linux/module.h>
 #include <linux/fs.h>
 #include <linux/sched.h>
+#include <linux/sched/signal.h>
 #include <linux/tty.h>      	/* For the tty declarations */
 #include <asm/uaccess.h>	/* for put_user */
 #include <asm/io.h>
