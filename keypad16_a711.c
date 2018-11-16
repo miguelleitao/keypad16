@@ -79,7 +79,8 @@ static void keypad_proc(void)
 }
 
 
-static void my_timer_func(unsigned long ptr)
+//static void my_timer_func(unsigned long ptr)
+static void my_timer_func(struct timer_list *unused)
 {
 	keypad_proc();
 	my_timer.expires = jiffies + SCAN_DELAY;
@@ -107,10 +108,17 @@ int __init init_module(void)
 	/*
 	 * Set up the keypad scanner timer the first time
 	 */
+/*
 	init_timer(&my_timer);
 	my_timer.function = my_timer_func;
 	my_timer.expires = jiffies + SCAN_DELAY;
 	add_timer(&my_timer);
+*/
+	/* setup your timer to call my_timer_callback */
+  	//setup_timer(&my_timer, my_timer_func, 0);
+	timer_setup(&my_timer, my_timer_func, 0);
+  	/* setup timer interval to 200 msecs */
+  	mod_timer(&my_timer, jiffies + msecs_to_jiffies(200));
 
 	return SUCCESS;
 }

@@ -2,7 +2,9 @@
 
 #sources = $(wildcard keypad16_a71[0-5].c)
 
-sources = keypad16_a710.c keypad16_a711.c keypad16_a712.c keypad16_a713.c keypad16_a714.c keypad16_a715.c
+sources = keypad16_a710.c keypad16_a711.c 
+
+#keypad16_a712.c keypad16_a713.c keypad16_a714.c keypad16_a715.c
 # keypad16_a717.c
 
 obj-m += $(sources:.c=.o)
