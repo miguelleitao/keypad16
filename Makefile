@@ -8,19 +8,17 @@ BUILDROOT_HOME=$(BASE_DIR)/buildroot/buildroot-2017.02.7
 CCC=$(BUILDROOT_HOME)/output/host/usr/bin/i486-linux-gcc
 CCFLAGS=--sysroot=$(BUILDROOT_HOME)/output/staging
 
-
-
 #sources = $(wildcard keypad16_a71[0-5].c)
 
 sources = keypad16_a710.c keypad16_a711.c keypad16_a712.c keypad16_a713.c keypad16_a714.c keypad16_a715.c
-# keypad16_a717.c
 
 obj-m += $(sources:.c=.o)
 
-mods =  $(sources:.c=.ko)
+modules =  $(sources:.c=.ko)
 
+utils = tcode tkey
 
-all: $(mods) tcode tkey
+all: $(modules) $(utils)
 
 %.ko: %.c
 	make -C ${LKM_DIR} M=$(PWD) modules
@@ -28,15 +26,11 @@ all: $(mods) tcode tkey
 tcode: tcode.c
 	$(CCC) -Wall $(CCFLAGS) -o $@ $^
 
-#cc -Wall -o $@ $^
-
 tkey: tkey.c
 	$(CCC) -Wall $(CCFLAGS) -o $@ $^
 
-#	cc -Wall -o $@ $^
-
 clean:
 	make -C ${LKM_DIR} M=$(PWD) clean
-	rm tcode tkey
+	rm -f tcode tkey
 
 
