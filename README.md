@@ -36,7 +36,7 @@ ls
 insmod keypad16_a710.ko
 lsmod
 dmesg
-mknod /dev/keypad16 c 431 0
+mknod /dev/keypad16 c 216 0
 cat /dev/keypad16
 ^c 
 rmmod keypad16_a710
@@ -49,7 +49,7 @@ dmesg
 cat /dev/keypad16
 # press some keypad keys
 ^c
-cat /dev/keypad16 |./tcode
+./tcode /dev/keypad16
 # press some keypad keys
 ^c
 rmmod keypad16_a711
