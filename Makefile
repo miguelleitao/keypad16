@@ -9,7 +9,8 @@ obj-m += $(sources:.c=.o)
 
 mods =  $(sources:.c=.ko)
 
-LKM_DIR=/lib/modules/$(shell uname -r)/build
+LKM_DIR=/home/jml/arcom/karcom/linux-4.13.10
+#LKM_DIR=/lib/modules/$(shell uname -r)/build
 #LKM_DIR=/usr/src/kernels/4.1.10-200.fc22.x86_64
 
 all: $(mods) tcode tkey
