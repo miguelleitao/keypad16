@@ -1,7 +1,7 @@
 # Makefile for keypad16 device driver
 
 BASE_DIR=..
-LKM_DIR=$(BASE_DIR)/karcom/linux-4.13.10
+LKM_DIR=$(BASE_DIR)/linux/linux-4.13.10
 #LKM_DIR=/lib/modules/$(shell uname -r)/build
 #LKM_DIR=/usr/src/kernels/4.1.10-200.fc22.x86_64
 BUILDROOT_HOME=$(BASE_DIR)/buildroot/buildroot-2017.02.7
