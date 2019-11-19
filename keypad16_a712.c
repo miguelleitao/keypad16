@@ -65,11 +65,11 @@ static keypad_table_element keypad_table[MAX_TABLE_KEYS];
 
 static keypad_table_element default_num1_table[]  = 
 {
-	{ 0x0001,	'd' },
-	{ 0x0002,	'c' },
-	{ 0x0004,	'a' },
-	{ 0x0008,       'b' },
-        { 0x0010,       '\n' },
+	{ 0x0001,	'D' },
+	{ 0x0002,	'C' },
+	{ 0x0004,	'A' },
+	{ 0x0008,       'B' },
+        { 0x0010,       '#' },
         { 0x0020,       '9' },
         { 0x0040,       '3' },
         { 0x0080,       '6' },
