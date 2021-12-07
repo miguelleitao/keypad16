@@ -4,21 +4,24 @@
 
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/moduleparam.h>
 #include <linux/fs.h>
 #include <linux/sched.h>
+#include <linux/sched/signal.h>
+#include <linux/types.h>
 #include <linux/proc_fs.h>	/* Necessary because we use the proc fs */
+#include <linux/seq_file.h>	/* Proc file implemented by seq_file */
 #include <linux/tty.h>      	/* For the tty declarations */
 #include <asm/uaccess.h>	/* for put_user */
 #include <asm/io.h>
 #include <linux/mutex.h>
 #include <linux/input.h>
+#include <linux/slab.h>
 
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Malta de Arcom");
+MODULE_AUTHOR("Malta de ARCOM");
 MODULE_DESCRIPTION("Device driver for 4x4 keyboards");	/* What does this module do */
-MODULE_VERSION("a07.0.7");
+MODULE_VERSION("a07.1.5");
 
 /*  
  *  Prototypes - this would normally go in a .h file
@@ -32,7 +35,7 @@ static ssize_t device_write(struct file *, const char *, size_t, loff_t *);
 
 #define SUCCESS 0
 #define DEVICE_NAME "keypad16"	/* Dev name as it appears in /proc/devices   */
-#define DEVICE_MAJOR 217
+#define DEVICE_MAJOR 216
 #define BUF_SIZE 80		/* Max length of char buffer */
 
 #define BASEPORT  		0x378
@@ -49,11 +52,6 @@ static ssize_t device_write(struct file *, const char *, size_t, loff_t *);
 
 #define	NUM1			1756
 #define ALPHA2			1758
-
-/*
- *	Use local to store unread keys
- */
-#define KEYPAD_BUFFER_CHAR
 
 /* 
  * Global variables are declared as static, so are global within the file. 
@@ -72,7 +70,104 @@ static long  AutoRepeatFirstDelay = HZ;
 static long  AutoRepeatDelay = HZ/10;
 static char *model = "num1    ";	/* Model name parameter */
 
+static int LOCAL_ECHO = 1;	/* Send directly to standard output */
+
+
 #define INC_MSG_PTR(ptr)	ptr = ( ptr-msg<BUF_SIZE-1 ? ptr+1 : msg );
+
+static int keypad_table_elements = 0;
+
+static int bytes_read = 0;
+
+typedef struct
+{
+        unsigned int scan_code;
+        char         char_code;
+} keypad_table_element;
+
+static keypad_table_element keypad_table[MAX_TABLE_KEYS];
+
+
+static int keypad_proc_table_show(struct seq_file *m, void *v) {
+	int i;
+        for (i=0 ; i<keypad_table_elements ; i++ ) {
+                seq_printf(m, "%04X : %02X\n", keypad_table[i].scan_code, keypad_table[i].char_code );
+        }
+
+  return 0;
+}
+static int keypad_proc_buffer_show(struct seq_file *m, void *v) {
+
+                char *mptr;
+                mptr = msg_Ptr;
+
+                while( mptr!=end_Ptr )
+                {
+                        seq_printf(m,"%c", *mptr);
+                        INC_MSG_PTR(mptr);
+                }
+		seq_printf(m,"\n");
+
+  return 0;
+}
+static int keypad_proc_first_show(struct seq_file *m, void *v) {
+  seq_printf(m,"%ld\n",AutoRepeatFirstDelay);
+  return 0;
+}
+static int keypad_proc_repeat_show(struct seq_file *m, void *v) {
+  seq_printf(m,"%ld\n",AutoRepeatDelay);
+  return 0;
+}
+
+
+
+static int keypad_proc_table_open(struct inode *inode, struct  file *file) {
+  return single_open(file, keypad_proc_table_show, NULL);
+}
+
+static int keypad_proc_first_open(struct inode *inode, struct  file *file) {
+  return single_open(file, keypad_proc_first_show, NULL);
+}
+
+static int keypad_proc_repeat_open(struct inode *inode, struct  file *file) {
+  return single_open(file, keypad_proc_repeat_show, NULL);
+}
+
+static int keypad_proc_buffer_open(struct inode *inode, struct  file *file) {
+  return single_open(file, keypad_proc_buffer_show, NULL);
+}
+
+
+
+static struct file_operations keypad_proc_table_fops = {
+  .owner = THIS_MODULE,
+  .open = keypad_proc_table_open,
+  .read = seq_read,
+  .llseek = seq_lseek,
+  .release = single_release,
+};
+static struct file_operations keypad_proc_buffer = {
+  .owner = THIS_MODULE,
+  .open = keypad_proc_buffer_open,
+  .read = seq_read,
+  .llseek = seq_lseek,
+  .release = single_release,
+};
+static struct file_operations keypad_proc_first = {
+  .owner = THIS_MODULE,
+  .open = keypad_proc_first_open,
+  .read = seq_read,
+  .llseek = seq_lseek,
+  .release = single_release,
+};
+static struct file_operations keypad_proc_repeat = {
+  .owner = THIS_MODULE,
+  .open = keypad_proc_repeat_open,
+  .read = seq_read,
+  .llseek = seq_lseek,
+  .release = single_release,
+};
+
 
 static struct file_operations fops = {
 	.read = device_read,
@@ -93,73 +188,80 @@ static struct input_dev *keypad16_input_dev;
  */
 DECLARE_WAIT_QUEUE_HEAD(WaitQ);
 
-DEFINE_MUTEX(TableMtx);
-DEFINE_MUTEX(BufferMtx);
-
 module_param(model, charp, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
 MODULE_PARM_DESC(model, "Keyboard model name");
 
-typedef struct
-{
-	unsigned int 	scan_code;
-	char	     	char_code;
-	unsigned int 	key_code;
-} keypad_table_element;
-
-static keypad_table_element keypad_table[MAX_TABLE_KEYS];
 
 static keypad_table_element default_num1_table[]  = 
 {
-	{ 0x0001,	'd',  KEY_ENTER },
-	{ 0x0002,	'c',  KEY_TAB  },
-	{ 0x0004,	'a',  KEY_A  },
-	{ 0x0008,       'b',  KEY_B  },
-        { 0x0010,       '#',  KEY_M  },
-        { 0x0020,       '9',  KEY_9  },
-        { 0x0040,       '3',  KEY_3  },
-        { 0x0080,       '6',  KEY_6  },
-        { 0x0100,       '0',  KEY_0  },
-        { 0x0200,       '8',  KEY_8  },
-        { 0x0400,       '2',  KEY_2  },
-        { 0x0800,       '5',  KEY_5  },
-//        { 0x1000,       '*',  KEY_KPASTERISK  },
-        { 0x2000,       '7',  KEY_7  },
-        { 0x4000,       '1',  KEY_1  },
-        { 0x8000,       '4',  KEY_4  },
-
-	{ 0x1004,	'A',  KEY_BACKSPACE },
-	{ 0x1002,	'C',  KEY_DOT },
-
+	{ 0x0001,	'd' },
+	{ 0x0002,	'c' },
+	{ 0x0004,	'a' },
+	{ 0x0008,       'b' },
+        { 0x0010,       '\n' },
+        { 0x0020,       '9' },
+        { 0x0040,       '3' },
+        { 0x0080,       '6' },
+        { 0x0100,       '0' },
+        { 0x0200,       '8' },
+        { 0x0400,       '2' },
+        { 0x0800,       '5' },
+        { 0x1000,       '*' },
+        { 0x2000,       '7' },
+        { 0x4000,       '1' },
+        { 0x8000,       '4' },
 };
 
 static keypad_table_element default_alpha2_table[]  =
 {
-	{ 0x8000,	'c',  KEY_TAB },
-	{ 0x4000,	'd',  KEY_ENTER  },
-	{ 0x2000,	'b',  KEY_B  },
-	{ 0x1000,       'a',  KEY_A  },
-        { 0x0400,       '#',  KEY_M  },
-        { 0x0800,       '9',  KEY_9  },
-        { 0x0100,       '3',  KEY_3  },
-        { 0x0200,       '6',  KEY_6  },
-        { 0x0040,       '0',  KEY_0  },
-        { 0x0080,       '8',  KEY_8  },
-        { 0x0010,       '2',  KEY_2  },
-        { 0x0020,       '5',  KEY_5  },
-//        { 0x0004,       '*',  KEY_KPASTERISK  },
-        { 0x0008,       '7',  KEY_7  },
-        { 0x0001,       '1',  KEY_1  },
-        { 0x0002,       '4',  KEY_4  },
-
-	{ 0x1004,       'D',  KEY_BACKSPACE },
-        { 0x8004,       'C',  KEY_DOT },
-
+        { 0x0001,       'd' },
+        { 0x0002,       'c' },
+        { 0x0004,       'a' },
+        { 0x0008,       'b' },
+        { 0x0010,       '\n' },
+        { 0x0020,       '9' },
+        { 0x0040,       '3' },
+        { 0x0080,       '6' },
+        { 0x0100,       '0' },
+        { 0x0200,       '8' },
+        { 0x0400,       '2' },
+        { 0x0800,       '5' },
+        { 0x1000,       '*' },
+        { 0x2000,       '7' },
+        { 0x4000,       '1' },
+        { 0x8000,       '4' },
 };
 
 
-static int keypad_table_elements = 0;
 
-static int bytes_read = 0;
+static void echo_char(char c)
+{
+   struct tty_struct *my_tty;
+   my_tty = current->signal->tty;           // The tty for the current task
+
+   /* If my_tty is NULL, the current task has no tty you can print to (this is possible,
+    * for example, if it's a daemon).  If so, there's nothing we can do.
+    */
+   if (my_tty != NULL) {
+
+      /* my_tty->driver is a struct which holds the tty's functions, one of which (write)
+       * is used to write strings to the tty.  It can be used to take a string either
+       * from the user's memory segment or the kernel's memory segment.
+       *
+       * The function's 1st parameter is the tty to write to, because the same function
+       * would normally be used for all tty's of a certain type.  
+       * The 2rd parameter is a pointer to a string.
+       * The 3th parameter is the length of the string.
+       */
+
+/*
+      ((my_tty->driver)->write)(
+         my_tty,                 // The tty itself
+         &c,                     // String
+         1 );		         // Length
+*/
+   }
+}
 
 static void keypad_scan(void)
 {
@@ -197,32 +299,14 @@ static char keypad_key(unsigned int key_status)
 	for (i=0 ; i<keypad_table_elements ; i++ )
 	{
 	      unsigned int scan_c;
-	      char	char_c;
 		scan_c = keypad_table[i].scan_code;
-		char_c = keypad_table[i].char_code; 
-	        if ( key_status==scan_c ) return char_c;
+	        if ( key_status==scan_c ) 
+			return  keypad_table[i].char_code;
 	}
 	return (char)0;
 }
 
-/*
- *  Translates key_status into KEY_CODE, using keypad_table
- */
-static int keypad_key_code(unsigned int key_status)
-{
-	int i;
-	for (i=0 ; i<keypad_table_elements ; i++ )
-	{
-	      unsigned int scan_c;
-	      int	key_c;
-		scan_c = keypad_table[i].scan_code;
-		key_c = keypad_table[i].key_code; 
-	        if ( key_status==scan_c ) return key_c;
-	}
-	return (char)0;
-}
-
-static char keypad_char(void)
+static char keypad_char_code(void)
 {
         static unsigned int last_key_status = 0;
         static long last_key_jiffies;
@@ -246,82 +330,58 @@ static char keypad_char(void)
         return keypad_newchar;
 }
 
-
-static unsigned int keypad_char_code(void)
-{
-        static unsigned int last_key_status = 0;
-        static long last_key_jiffies;
-	int keypad_newchar = 0;
-
-        if (key_status != 0)
-        {
-          if ( key_status != last_key_status )          // new key
-          {
-            last_key_jiffies = jiffies + AutoRepeatFirstDelay;
-	    keypad_newchar = keypad_key_code(key_status);
-          }
-          else
-            if ( jiffies>=last_key_jiffies )
-            {
-               last_key_jiffies = jiffies + AutoRepeatDelay;
-               keypad_newchar = keypad_key_code(key_status);
-            }  
-        }
-        last_key_status = key_status;
-        return keypad_newchar;
-}
-
 static void keypad_proc(void)
 {
-      char newkey;
-      unsigned int key_code;
-      keypad_scan();
+	//char newkey;
+        unsigned int key_code;
 
-      key_code = keypad_char_code();
+        keypad_scan();
+        key_code = keypad_char_code();
+
       /*
        * DMUX: Selects keys to send to /dev/keypad16
        */
       if ( key_code != KEY_A && key_code != KEY_B && key_code != KEY_M  && key_code != KEY_MENU )
       {
-	// Send through Linux Input System
-      	if ( key_code !=0 )
-	{
-	    if ( key_code==KEY_DOT ) {
-		input_report_key(keypad16_input_dev,  KEY_LEFTSHIFT, 1);
-		input_report_key(keypad16_input_dev,  KEY_TAB, 1);
-		input_report_key(keypad16_input_dev,  KEY_TAB, 0);
-		input_report_key(keypad16_input_dev,  KEY_LEFTSHIFT, 0);
-	    } else {
-	    	/* report press of key  */
-	    	input_report_key(keypad16_input_dev, key_code, 1);
-	    	/* report release of key  */
-	    	input_report_key(keypad16_input_dev, key_code, 0);
-	    }
-	}
+        // Send through Linux Input System
+        if ( key_code !=0 )
+        {
+            if ( key_code==KEY_DOT ) {
+                input_report_key(keypad16_input_dev,  KEY_LEFTSHIFT, 1);
+                input_report_key(keypad16_input_dev,  KEY_TAB, 1);
+                input_report_key(keypad16_input_dev,  KEY_TAB, 0);
+                input_report_key(keypad16_input_dev,  KEY_LEFTSHIFT, 0);
+            } else {
+                /* report press of key  */
+                input_report_key(keypad16_input_dev, key_code, 1);
+                /* report release of key  */
+                input_report_key(keypad16_input_dev, key_code, 0);
+            }
+        }
       }
 #ifdef KEYPAD_BUFFER_CHAR
       else
       {
-	// Buffer then to /dev/keypad16
+        // Buffer then to /dev/keypad16
         newkey = keypad_char();
-	if ( newkey!=0	)
-	{
-	    if ( msg_len <= BUF_SIZE - 2 ) {
-		*end_Ptr = newkey;
-		INC_MSG_PTR(end_Ptr);
-		*end_Ptr = (char)0;
-		msg_len += 1;
-	    }
-	    else {
-		printk(KERN_INFO "Keypad16 Buffer full \n");
-		// beep;
-	    }
-	    /* 
-	     * Wake up all the processes in WaitQ, so if anybody is waiting for the
-	     * file, they can have it.
-	     */
-	    wake_up(&WaitQ);
-	}
+        if ( newkey!=0  )
+        {
+            if ( msg_len <= BUF_SIZE - 2 ) {
+                *end_Ptr = newkey;
+                INC_MSG_PTR(end_Ptr);
+                *end_Ptr = (char)0;
+                msg_len += 1;
+            }
+            else {
+                printk(KERN_INFO "Keypad16 Buffer full \n");
+                // beep;
+            }
+            /* 
+             * Wake up all the processes in WaitQ, so if anybody is waiting for the
+             * file, they can have it.
+             */
+            wake_up(&WaitQ);
+        }
       }
 #endif
 
@@ -337,70 +397,45 @@ static void my_timer_func(unsigned long ptr)
 
 
 /*
+ *
  * This structures hold information about the /proc files
- */
+ *
+ */ 
+
+
 static struct proc_dir_entry *Our_Proc_Dir;
 static struct proc_dir_entry *Our_Proc_Table;
 static struct proc_dir_entry *Our_Proc_Buffer;
 static struct proc_dir_entry *Our_Proc_Repeat;
 static struct proc_dir_entry *Our_Proc_RepFirst;
 
-/*
- * The buffer used to store character for this module
- */
-static char procfs_buffer[PROCFS_MAX_SIZE];
-
-/*
- * The size of the buffer
- */
-//static unsigned long procfs_buffer_size = 0;
 
 
 /*
- * This function is called then the /proc file is read
- */
-int
-procfile_read_table(char *buffer,
-              char **buffer_location,
-              off_t offset, int buffer_length, int *eof, void *data)
-{
-	int i;
-	char *buf;
-	buf = buffer;
-	for (i=0 ; i<keypad_table_elements && i*10<buffer_length ; i++ )
-	{
-		char lineT[20];
-		int li;
-		sprintf(lineT, "%04X : %02X\n", keypad_table[i].scan_code, keypad_table[i].char_code );
-		for( li=0 ; li<strlen(lineT) ; li++ )
-			*(buf++) = lineT[li];
-	}
-	*buf = (char)0;
-        return i*10;
-}
-
-/*
+ *
  * This function is called when the /proc file is written
+ *
  */
+/*
 int procfile_write_table(struct file *file, const char *buffer, unsigned long count,
                    void *data)
 {
 	char *tabp;
 	int tabi = 0;
-        /* get buffer size */
+        // get buffer size 
         unsigned long procfs_buffer_size = count;
         if (procfs_buffer_size > PROCFS_MAX_SIZE ) {
                 procfs_buffer_size = PROCFS_MAX_SIZE;
         }
 
-        /* write data to the buffer */
+        // write data to the buffer 
         if ( copy_from_user(procfs_buffer, buffer, procfs_buffer_size) ) {
                 return -EFAULT;
         }
 	procfs_buffer[procfs_buffer_size] = (char)0;
         printk(KERN_INFO "Leu %ld bytes: '%s'\n",procfs_buffer_size,buffer);
 	
-	/* parse received data and generate a new table */
+	// parse received data and generate a new table 
 	tabp = procfs_buffer;
 	while ( strlen(tabp)>6 && tabi<MAX_TABLE_KEYS ) {
 		sscanf(tabp, "%4X : %2hhX\n", &(keypad_table[tabi].scan_code), &(keypad_table[tabi].char_code) );
@@ -412,174 +447,90 @@ int procfile_write_table(struct file *file, const char *buffer, unsigned long co
 	keypad_table_elements = tabi;
         return procfs_buffer_size;
 }
+*/
 
-/* 
- * This function is called then the /proc file is read
- */
-int 
-procfile_read_buffer(char *buffer,
-	      char **buffer_location,
-	      off_t offset, int buffer_length, int *eof, void *data)
-{
-	int ret;
-	
-	printk(KERN_INFO "procfile_read_buffer (/proc/%s/%s) called\n", PROCFS_DIR, PROCFS_TABLE);
-	
-	if (offset > 0) {
-		/* we have finished to read, return 0 */
-		ret  = 0;
-	} else {
-		/* fill the buffer, return the buffer size */
-		char *mptr, *buf;
-		mptr = msg;
-		buf  = buffer;
-		while( buffer_length && mptr!=end_Ptr )
-		{
-			*buf = *mptr;
-			buf++;
-			INC_MSG_PTR(mptr);
-		}
-		ret = msg_len;
-	}
-
-	return ret;
-}
-
-/*
+/**
  * This function is called when the /proc file is written
+ *
  */
+/*
 int procfile_write_buffer(struct file *file, const char *buffer, unsigned long count,
 		   void *data)
 {
-	/* get buffer size */
+	// get buffer size 
 	 unsigned long procfs_buffer_size = count;
 	if (procfs_buffer_size > PROCFS_MAX_SIZE ) {
 		procfs_buffer_size = PROCFS_MAX_SIZE;
 	}
 	
-	/* write data to the buffer */
+	// write data to the buffer 
 	if ( copy_from_user(procfs_buffer, buffer, procfs_buffer_size) ) {
 		return -EFAULT;
 	}
 	printk(KERN_INFO "Leu %ld bytes: '%s'\n",procfs_buffer_size,buffer);
 	return procfs_buffer_size;
 }
-
-/*
- * This function is called then the /proc file is read
- */
-int
-procfile_read_first(char *buffer,
-              char **buffer_location,
-              off_t offset, int buffer_length, int *eof, void *data)
-{
-	int i;
-        char *buf;
-	char mymsg[20];
-        buf = buffer;
-	sprintf( mymsg, "%ld\n", AutoRepeatFirstDelay );
-	
-        for( i=0 ; i<strlen(mymsg) && i<buffer_length ; i++ )
-                        *(buf++) = mymsg[i];
-        return i;
-}
-
-/*
- * This function is called then the /proc file is read
- */
-int
-procfile_read_repeat(char *buffer,
-              char **buffer_location,
-              off_t offset, int buffer_length, int *eof, void *data)
-{
-        int i;
-        char *buf;
-        char mymsg[20];
-        buf = buffer;
-        sprintf( mymsg, "%ld\n", AutoRepeatDelay );
-
-        for( i=0 ; i<strlen(mymsg) && i<buffer_length ; i++ )
-                        *(buf++) = mymsg[i];
-        return i;
-}
-
+*/
 
 /*
  * This function is called when the /proc file is written
  */
+/*
 int procfile_write_first(struct file *file, const char *buffer, unsigned long count,
                    void *data)
 {
-	char *endp;
-
-        /* get buffer size */
+        // get buffer size 
         unsigned long procfs_buffer_size = count;
         if (procfs_buffer_size > PROCFS_MAX_SIZE ) {
                 procfs_buffer_size = PROCFS_MAX_SIZE;
         }
 
-        /* write data to the buffer */
+        // write data to the buffer 
         if ( copy_from_user(procfs_buffer, buffer, procfs_buffer_size) ) {
                 return -EFAULT;
         }
-        procfs_buffer[procfs_buffer_size] = 0;
-        printk(KERN_INFO "procfile_write_first got %ld bytes: '%s'\n",procfs_buffer_size,procfs_buffer);
-	AutoRepeatFirstDelay = simple_strtoul(procfs_buffer, &endp, 10);
-	// New kernel versions shoul use: kstrtouint(procfs_buffer, 10, &AutoRepeatFirstDelay);
-
+        printk(KERN_INFO "procfile_write_first (not implemented) got %ld bytes: '%s'\n",procfs_buffer_size,buffer);
         return procfs_buffer_size;
 }
+*/
 
 /*
  * This function is called when the /proc file is written
  */
+/*
 int procfile_write_repeat(struct file *file, const char *buffer, unsigned long count,
                    void *data)
 {
-	char *endp;
-
-        /* get buffer size */
+        // get buffer size 
         unsigned long procfs_buffer_size = count;
         if (procfs_buffer_size > PROCFS_MAX_SIZE ) {
                 procfs_buffer_size = PROCFS_MAX_SIZE;
         }
 
-        /* write data to the buffer */
+        // write data to the buffer 
         if ( copy_from_user(procfs_buffer, buffer, procfs_buffer_size) ) {
                 return -EFAULT;
         }
-	procfs_buffer[procfs_buffer_size] = 0;
-        printk(KERN_INFO "procfile_write_repeat got %ld bytes: '%s'\n",procfs_buffer_size,procfs_buffer);
-        AutoRepeatDelay = simple_strtoul(procfs_buffer, &endp, 10);
-
-	// New kernel versions shoul use: kstrtouint(procfs_buffer, 10, &AutoRepeatDelay);
+        printk(KERN_INFO "procfile_write_repeat (not implemented) got %ld bytes: '%s'\n",procfs_buffer_size,buffer);
         return procfs_buffer_size;
 }
 
+*/
 
 static int __init create_proc_file(struct proc_dir_entry **entry, const char* name, 
-	read_proc_t *read_func,  write_proc_t *write_func )
+	int proc_open_function(struct inode *, struct  file *), struct file_operations *fops )
 {
-	(*entry) = create_proc_entry(name, 0644, Our_Proc_Dir);
+	(*entry) = proc_create(name, 0644, Our_Proc_Dir, fops);
 
 	if ( (*entry) == NULL ) {
-		remove_proc_entry(PROCFS_TABLE, Our_Proc_Table);
                 printk(KERN_ALERT "Error: Could not initialize /proc/%s/%s\n",
-                        PROCFS_DIR, PROCFS_TABLE);
+                        PROCFS_DIR, name);
                 return -ENOMEM;
         }
-        (*entry)->read_proc  = read_func;
-        (*entry)->write_proc = write_func;
-        //(*entry)->owner     = THIS_MODULE;
-        (*entry)->mode      = S_IFREG | S_IRUGO;
-        (*entry)->uid       = 0;
-        (*entry)->gid       = 0;
-        (*entry)->size      = 180;
-
         printk(KERN_INFO "  /proc/%s/%s created\n", PROCFS_DIR, name);
 	return 0;
 }
-	
+
 
 /*
  * This function is called when the module is loaded
@@ -588,25 +539,24 @@ int __init init_module(void)
 {
 	int err;
 
-        printk(KERN_INFO "Loading module keypad16\n");
+	memcpy(keypad_table,  default_num1_table, sizeof(default_num1_table) );
+        keypad_table_elements = sizeof(default_num1_table) / sizeof(keypad_table_element);
 
 	if (strlen(model)>0) {
+		printk(KERN_INFO "  Model name:'%s'\n", model);
 		switch (model[0]) {
 			case 'A':		// model: alpha2
 			case 'a':
 				KeypadModel = ALPHA2;
 				memcpy(keypad_table,  default_alpha2_table, sizeof(default_alpha2_table) );
 				keypad_table_elements = sizeof(default_alpha2_table) / sizeof(keypad_table_element);
-				printk(KERN_INFO "  Keypad Model: 'Alpha2', %d keys\n", keypad_table_elements);
+				printk(KERN_INFO "  Model switched to 'Alpha2'\n");
 				break;
 			case 'N':		// model: num1
 			case 'n':
 			default:
 				KeypadModel = NUM1;
-                                memcpy(keypad_table,  default_num1_table, sizeof(default_num1_table) );
-                                keypad_table_elements = sizeof(default_num1_table) / sizeof(keypad_table_element);
-				printk(KERN_INFO "  Keypad Model: 'Num1', %d keys\n", keypad_table_elements);
-                                break;
+				break;
 		}
 	}
 			
@@ -618,58 +568,77 @@ int __init init_module(void)
 	}
 	if (DEVICE_MAJOR > 0) Major = DEVICE_MAJOR;
 	ResetBuffer();
-	printk(KERN_INFO "  I was assigned major number %d.\n", Major);
+	printk(KERN_INFO "Loading module keypad16\n");
+	printk(KERN_INFO "I was assigned major number %d.\n", Major);
 
 	/* create the /proc files */
-
-	Our_Proc_Dir  = proc_mkdir(PROCFS_DIR, NULL);
-	if ( Our_Proc_Dir == NULL ) {
-		printk(KERN_ALERT "Error: Could not create dir /proc/%s\n",
+        Our_Proc_Dir  = proc_mkdir(PROCFS_DIR, NULL);
+        if ( Our_Proc_Dir == NULL ) {
+                printk(KERN_ALERT "Error: Could not create dir /proc/%s\n",
                         PROCFS_DIR);
-		return -ENOMEM;
-	}
+                return -ENOMEM;
+        }
+/*
+	struct proc_dir_entry *myproc_dir;
+	myproc = proc_mkdir(PROCFS_DIR, NULL);
+	if (myproc==NULL) {
+	    printk(KERN_ERR "Could not create proc entry '%s'\n", PROCFS_DIR);
+	    return -ENOMEM;
+  	}
+  	printk(KERN_INFO "Proc entry '%s' created\n", PROCFS_DIR);
 
-	create_proc_file(&Our_Proc_Table,     PROCFS_TABLE,  procfile_read_table,   procfile_write_table  );
-	create_proc_file(&Our_Proc_Buffer,    PROCFS_BUFFER, procfile_read_buffer,  procfile_write_buffer );
-	create_proc_file(&Our_Proc_RepFirst,  PROCFS_FIRST,  procfile_read_first,   procfile_write_first );
-	create_proc_file(&Our_Proc_Repeat,    PROCFS_REPEAT, procfile_read_repeat,  procfile_write_repeat );
+	myproc = proc_create(PROCFS_DIR, 0, NULL, &keypad_proc_fops );
+	if (myproc==NULL) {
+    printk(KERN_ERR "Could not create proc entry '%s'\n", PROCFS_DIR);
+    return -ENOMEM;
+  }
+  printk(KERN_INFO "Proc entry '%s' created\n", PROCFS_DIR);
+*/
+
+	create_proc_file(&Our_Proc_Table,     PROCFS_TABLE, keypad_proc_table_open, &keypad_proc_table_fops );
+	create_proc_file(&Our_Proc_Buffer,    PROCFS_BUFFER, keypad_proc_buffer_open, &keypad_proc_buffer);
+	create_proc_file(&Our_Proc_RepFirst,  PROCFS_FIRST, keypad_proc_first_open, &keypad_proc_first);
+	create_proc_file(&Our_Proc_Repeat,    PROCFS_REPEAT, keypad_proc_repeat_open, &keypad_proc_repeat);
 
 
-	keypad16_input_dev = input_allocate_device();
-	if (!keypad16_input_dev)
-		return -ENOMEM;
-	keypad16_input_dev->name = devname;
+        keypad16_input_dev = input_allocate_device();
+        if (!keypad16_input_dev)
+                return -ENOMEM;
+        keypad16_input_dev->name = devname;
 
-	/* register a input_dev for KEY_*  
-	 */
+        /* register a input_dev for KEY_*  
+         */
 
-	/* set the event type */
-	keypad16_input_dev->evbit[0] = BIT(EV_KEY);
+        /* set the event type */
+        keypad16_input_dev->evbit[0] = BIT(EV_KEY);
 
-	/* set the event codes */
-	set_bit(KEY_A, keypad16_input_dev->keybit);
-	set_bit(KEY_B, keypad16_input_dev->keybit);
-	set_bit(KEY_C, keypad16_input_dev->keybit);
-	set_bit(KEY_D, keypad16_input_dev->keybit);
-	set_bit(KEY_0, keypad16_input_dev->keybit);
-	set_bit(KEY_1, keypad16_input_dev->keybit);
-	set_bit(KEY_2, keypad16_input_dev->keybit);
-	set_bit(KEY_3, keypad16_input_dev->keybit);
-	set_bit(KEY_4, keypad16_input_dev->keybit);
-	set_bit(KEY_5, keypad16_input_dev->keybit);
-	set_bit(KEY_6, keypad16_input_dev->keybit);
-	set_bit(KEY_7, keypad16_input_dev->keybit);
-	set_bit(KEY_8, keypad16_input_dev->keybit);
-	set_bit(KEY_9, keypad16_input_dev->keybit);
-	set_bit(KEY_KPASTERISK, keypad16_input_dev->keybit);	
-	set_bit(KEY_TAB, keypad16_input_dev->keybit);
-	set_bit(KEY_ENTER, keypad16_input_dev->keybit);	
+        /* set the event codes */
+        set_bit(KEY_A, keypad16_input_dev->keybit);
+        set_bit(KEY_B, keypad16_input_dev->keybit);
+        set_bit(KEY_C, keypad16_input_dev->keybit);
+        set_bit(KEY_D, keypad16_input_dev->keybit);
+        set_bit(KEY_0, keypad16_input_dev->keybit);
+        set_bit(KEY_1, keypad16_input_dev->keybit);
+        set_bit(KEY_2, keypad16_input_dev->keybit);
+        set_bit(KEY_3, keypad16_input_dev->keybit);
+        set_bit(KEY_4, keypad16_input_dev->keybit);
+        set_bit(KEY_5, keypad16_input_dev->keybit);
+        set_bit(KEY_6, keypad16_input_dev->keybit);
+        set_bit(KEY_7, keypad16_input_dev->keybit);
+        set_bit(KEY_8, keypad16_input_dev->keybit);
+        set_bit(KEY_9, keypad16_input_dev->keybit);
+        set_bit(KEY_KPASTERISK, keypad16_input_dev->keybit);
+        set_bit(KEY_TAB, keypad16_input_dev->keybit);
+        set_bit(KEY_ENTER, keypad16_input_dev->keybit);
         set_bit(KEY_BACKSPACE, keypad16_input_dev->keybit);
         set_bit(KEY_LEFTSHIFT, keypad16_input_dev->keybit);
 
-	err = input_register_device(keypad16_input_dev);
-	if (err)
-		input_free_device(keypad16_input_dev);
+        err = input_register_device(keypad16_input_dev);
+        if (err)
+                input_free_device(keypad16_input_dev);
+
+
+
 	/*
 	 * Set up the keypad scanner timer the first time
 	 */
@@ -678,6 +647,7 @@ int __init init_module(void)
 	my_timer.expires = jiffies + SCAN_DELAY;
 	add_timer(&my_timer);
 
+	printk(KERN_INFO "keypad16 teclas=%d\n", keypad_table_elements ); 
 	return SUCCESS;
 }
 
@@ -691,13 +661,13 @@ void __exit cleanup_module(void)
 	 */
 	unregister_chrdev(Major, DEVICE_NAME);
 	del_timer(&my_timer);
+
 	remove_proc_entry(PROCFS_TABLE, Our_Proc_Dir);
 	remove_proc_entry(PROCFS_BUFFER, Our_Proc_Dir);
 	remove_proc_entry(PROCFS_FIRST, Our_Proc_Dir);
 	remove_proc_entry(PROCFS_REPEAT, Our_Proc_Dir);
 
         remove_proc_entry(PROCFS_DIR, NULL);
-	input_unregister_device(keypad16_input_dev);
 	printk(KERN_INFO "Module keypad16 unloaded.\n");
 }
 
@@ -774,6 +744,7 @@ static ssize_t device_read(struct file *filp,   /* see include/linux/fs.h   */
 		 * the user data segment. 
 		 */
 		put_user(*msg_Ptr, buffer++);
+                if ( LOCAL_ECHO ) echo_char(*msg_Ptr);
 		INC_MSG_PTR(msg_Ptr);
 		length--;
 		bytes_read++;
