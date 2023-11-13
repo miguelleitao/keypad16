@@ -1,0 +1,11 @@
+*.o
+*.ko
+*.mod.c
+tkey
+*-static
+tcod
+*.order
+*.symver
+new
+old
+

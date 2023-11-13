@@ -5,16 +5,20 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/fs.h>
-#include <linux/sched/signal.h>
+#include <linux/sched.h>
+#include <linux/types.h>
+#include <linux/proc_fs.h>	/* Necessary because we use the proc fs */
+#include <linux/seq_file.h>	/* Proc file implemented by seq_file */
 #include <linux/tty.h>      	/* For the tty declarations */
 #include <asm/uaccess.h>	/* for put_user */
 #include <asm/io.h>
+#include <linux/slab.h>
 
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Malta de ARCOM");
 MODULE_DESCRIPTION("Device driver for 4x4 keyboards");	/* What does this module do */
-MODULE_VERSION("a07.1.4");
+MODULE_VERSION("a07.1.5");
 
 /*  
  *  Prototypes - this would normally go in a .h file
@@ -33,6 +37,13 @@ static ssize_t device_write(struct file *, const char *, size_t, loff_t *);
 
 #define BASEPORT  		0x378
 #define SCAN_DELAY   		HZ/20
+
+#define PROCFS_MAX_SIZE         1024
+#define PROCFS_DIR              "keypad16"
+#define PROCFS_TABLE            "table"
+#define PROCFS_BUFFER           "buffer"
+#define PROCFS_REPEAT           "rep_time"
+#define PROCFS_FIRST            "rep_first"
 
 #define MAX_TABLE_KEYS		32
 
@@ -56,10 +67,104 @@ static long  AutoRepeatFirstDelay = HZ;
 static long  AutoRepeatDelay = HZ/10;
 static char *model = "num1    ";	/* Model name parameter */
 
-//static int LOCAL_ECHO = 1;	/* Send directly to standard output */
+static int LOCAL_ECHO = 1;	/* Send directly to standard output */
 
 
 #define INC_MSG_PTR(ptr)	ptr = ( ptr-msg<BUF_SIZE-1 ? ptr+1 : msg );
+
+static int keypad_table_elements = 0;
+
+static int bytes_read = 0;
+
+typedef struct
+{
+        unsigned int scan_code;
+        char         char_code;
+} keypad_table_element;
+
+static keypad_table_element keypad_table[MAX_TABLE_KEYS];
+
+
+static int keypad_proc_table_show(struct seq_file *m, void *v) {
+	int i;
+        for (i=0 ; i<keypad_table_elements ; i++ ) {
+                seq_printf(m, "%04X : %02X\n", keypad_table[i].scan_code, keypad_table[i].char_code );
+        }
+
+  return 0;
+}
+static int keypad_proc_buffer_show(struct seq_file *m, void *v) {
+
+                char *mptr;
+                mptr = msg_Ptr;
+
+                while( mptr!=end_Ptr )
+                {
+                        seq_printf(m,"%c", *mptr);
+                        INC_MSG_PTR(mptr);
+                }
+		seq_printf(m,"\n");
+
+  return 0;
+}
+static int keypad_proc_first_show(struct seq_file *m, void *v) {
+  seq_printf(m,"%ld\n",AutoRepeatFirstDelay);
+  return 0;
+}
+static int keypad_proc_repeat_show(struct seq_file *m, void *v) {
+  seq_printf(m,"%ld\n",AutoRepeatDelay);
+  return 0;
+}
+
+
+
+static int keypad_proc_table_open(struct inode *inode, struct  file *file) {
+  return single_open(file, keypad_proc_table_show, NULL);
+}
+
+static int keypad_proc_first_open(struct inode *inode, struct  file *file) {
+  return single_open(file, keypad_proc_first_show, NULL);
+}
+
+static int keypad_proc_repeat_open(struct inode *inode, struct  file *file) {
+  return single_open(file, keypad_proc_repeat_show, NULL);
+}
+
+static int keypad_proc_buffer_open(struct inode *inode, struct  file *file) {
+  return single_open(file, keypad_proc_buffer_show, NULL);
+}
+
+
+
+static struct file_operations keypad_proc_table_fops = {
+  .owner = THIS_MODULE,
+  .open = keypad_proc_table_open,
+  .read = seq_read,
+  .llseek = seq_lseek,
+  .release = single_release,
+};
+static struct file_operations keypad_proc_buffer = {
+  .owner = THIS_MODULE,
+  .open = keypad_proc_buffer_open,
+  .read = seq_read,
+  .llseek = seq_lseek,
+  .release = single_release,
+};
+static struct file_operations keypad_proc_first = {
+  .owner = THIS_MODULE,
+  .open = keypad_proc_first_open,
+  .read = seq_read,
+  .llseek = seq_lseek,
+  .release = single_release,
+};
+static struct file_operations keypad_proc_repeat = {
+  .owner = THIS_MODULE,
+  .open = keypad_proc_repeat_open,
+  .read = seq_read,
+  .llseek = seq_lseek,
+  .release = single_release,
+};
+
 
 static struct file_operations fops = {
 	.read = device_read,
@@ -79,13 +184,6 @@ DECLARE_WAIT_QUEUE_HEAD(WaitQ);
 module_param(model, charp, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
 MODULE_PARM_DESC(model, "Keyboard model name");
 
-typedef struct
-{
-	unsigned int scan_code;
-	char	     char_code;
-} keypad_table_element;
-
-static keypad_table_element keypad_table[MAX_TABLE_KEYS];
 
 static keypad_table_element default_num1_table[]  = 
 {
@@ -128,36 +226,35 @@ static keypad_table_element default_alpha2_table[]  =
 };
 
 
-static int keypad_table_elements = 0;
 
-static int bytes_read = 0;
-/*
 static void echo_char(char c)
 {
    struct tty_struct *my_tty;
    my_tty = current->signal->tty;           // The tty for the current task
 
-   // If my_tty is NULL, the current task has no tty you can print to (this is possible,
-   // for example, if it's a daemon).  If so, there's nothing we can do.
-    //
+   /* If my_tty is NULL, the current task has no tty you can print to (this is possible,
+    * for example, if it's a daemon).  If so, there's nothing we can do.
+    */
    if (my_tty != NULL) {
 
-      // my_tty->driver is a struct which holds the tty's functions, one of which (write)
-      // is used to write strings to the tty.  It can be used to take a string either
-      // from the user's memory segment or the kernel's memory segment.
-      //
-      // The function's 1st parameter is the tty to write to, because the same function
-      // would normally be used for all tty's of a certain type.  
-      // The 2rd parameter is a pointer to a string.
-      // The 3th parameter is the length of the string.
-       //
+      /* my_tty->driver is a struct which holds the tty's functions, one of which (write)
+       * is used to write strings to the tty.  It can be used to take a string either
+       * from the user's memory segment or the kernel's memory segment.
+       *
+       * The function's 1st parameter is the tty to write to, because the same function
+       * would normally be used for all tty's of a certain type.  
+       * The 2rd parameter is a pointer to a string.
+       * The 3th parameter is the length of the string.
+       */
+
+/*
       ((my_tty->driver)->write)(
          my_tty,                 // The tty itself
          &c,                     // String
          1 );		         // Length
+*/
    }
 }
-*/
 
 static void keypad_scan(void)
 {
@@ -196,8 +293,8 @@ static char keypad_key(unsigned int key_status)
 	{
 	      unsigned int scan_c;
 		scan_c = keypad_table[i].scan_code;
-		if ( key_status==scan_c ) 
-			return keypad_table[i].char_code;
+	        if ( key_status==scan_c ) 
+			return  keypad_table[i].char_code;
 	}
 	return (char)0;
 }
@@ -264,18 +361,152 @@ static void my_timer_func(unsigned long ptr)
 }
 
 
+/*
+ *
+ * This structures hold information about the /proc files
+ *
+ */ 
+
+
+static struct proc_dir_entry *Our_Proc_Dir;
+static struct proc_dir_entry *Our_Proc_Table;
+static struct proc_dir_entry *Our_Proc_Buffer;
+static struct proc_dir_entry *Our_Proc_Repeat;
+static struct proc_dir_entry *Our_Proc_RepFirst;
+
+
+
+/*
+ *
+ * This function is called when the /proc file is written
+ *
+ */
+/*
+int procfile_write_table(struct file *file, const char *buffer, unsigned long count,
+                   void *data)
+{
+	char *tabp;
+	int tabi = 0;
+        // get buffer size 
+        unsigned long procfs_buffer_size = count;
+        if (procfs_buffer_size > PROCFS_MAX_SIZE ) {
+                procfs_buffer_size = PROCFS_MAX_SIZE;
+        }
+
+        // write data to the buffer 
+        if ( copy_from_user(procfs_buffer, buffer, procfs_buffer_size) ) {
+                return -EFAULT;
+        }
+	procfs_buffer[procfs_buffer_size] = (char)0;
+        printk(KERN_INFO "Leu %ld bytes: '%s'\n",procfs_buffer_size,buffer);
+	
+	// parse received data and generate a new table 
+	tabp = procfs_buffer;
+	while ( strlen(tabp)>6 && tabi<MAX_TABLE_KEYS ) {
+		sscanf(tabp, "%4X : %2hhX\n", &(keypad_table[tabi].scan_code), &(keypad_table[tabi].char_code) );
+		tabi++;
+		tabp = strchr(tabp, 0x0a);
+		if ( tabp==NULL )	break;
+		tabp++;
+	}
+	keypad_table_elements = tabi;
+        return procfs_buffer_size;
+}
+*/
+
+/**
+ * This function is called when the /proc file is written
+ *
+ */
+/*
+int procfile_write_buffer(struct file *file, const char *buffer, unsigned long count,
+		   void *data)
+{
+	// get buffer size 
+	 unsigned long procfs_buffer_size = count;
+	if (procfs_buffer_size > PROCFS_MAX_SIZE ) {
+		procfs_buffer_size = PROCFS_MAX_SIZE;
+	}
+	
+	// write data to the buffer 
+	if ( copy_from_user(procfs_buffer, buffer, procfs_buffer_size) ) {
+		return -EFAULT;
+	}
+	printk(KERN_INFO "Leu %ld bytes: '%s'\n",procfs_buffer_size,buffer);
+	return procfs_buffer_size;
+}
+*/
+
+/*
+ * This function is called when the /proc file is written
+ */
+/*
+int procfile_write_first(struct file *file, const char *buffer, unsigned long count,
+                   void *data)
+{
+        // get buffer size 
+        unsigned long procfs_buffer_size = count;
+        if (procfs_buffer_size > PROCFS_MAX_SIZE ) {
+                procfs_buffer_size = PROCFS_MAX_SIZE;
+        }
+
+        // write data to the buffer 
+        if ( copy_from_user(procfs_buffer, buffer, procfs_buffer_size) ) {
+                return -EFAULT;
+        }
+        printk(KERN_INFO "procfile_write_first (not implemented) got %ld bytes: '%s'\n",procfs_buffer_size,buffer);
+        return procfs_buffer_size;
+}
+*/
+
+/*
+ * This function is called when the /proc file is written
+ */
+/*
+int procfile_write_repeat(struct file *file, const char *buffer, unsigned long count,
+                   void *data)
+{
+        // get buffer size 
+        unsigned long procfs_buffer_size = count;
+        if (procfs_buffer_size > PROCFS_MAX_SIZE ) {
+                procfs_buffer_size = PROCFS_MAX_SIZE;
+        }
+
+        // write data to the buffer 
+        if ( copy_from_user(procfs_buffer, buffer, procfs_buffer_size) ) {
+                return -EFAULT;
+        }
+        printk(KERN_INFO "procfile_write_repeat (not implemented) got %ld bytes: '%s'\n",procfs_buffer_size,buffer);
+        return procfs_buffer_size;
+}
+
+*/
+
+static int __init create_proc_file(struct proc_dir_entry **entry, const char* name, 
+	int proc_open_function(struct inode *, struct  file *), struct file_operations *fops )
+{
+	(*entry) = proc_create(name, 0644, Our_Proc_Dir, fops);
+
+	if ( (*entry) == NULL ) {
+                printk(KERN_ALERT "Error: Could not initialize /proc/%s/%s\n",
+                        PROCFS_DIR, name);
+                return -ENOMEM;
+        }
+        printk(KERN_INFO "  /proc/%s/%s created\n", PROCFS_DIR, name);
+	return 0;
+}
+
 
 /*
  * This function is called when the module is loaded
  */
 int __init init_module(void)
 {
- 	printk(KERN_INFO "Loading module keypad16\n");
-
 	memcpy(keypad_table,  default_num1_table, sizeof(default_num1_table) );
         keypad_table_elements = sizeof(default_num1_table) / sizeof(keypad_table_element);
 
 	if (strlen(model)>0) {
+		printk(KERN_INFO "  Model name:'%s'\n", model);
 		switch (model[0]) {
 			case 'A':		// model: alpha2
 			case 'a':
@@ -295,12 +526,43 @@ int __init init_module(void)
         Major = register_chrdev(DEVICE_MAJOR, DEVICE_NAME, &fops);
 
 	if (Major < 0) {
-	  printk(KERN_ALERT "  Registering char device failed with %d\n", Major);
+	  printk(KERN_ALERT "Registering char device failed with %d\n", Major);
 	  return Major;
 	}
 	if (DEVICE_MAJOR > 0) Major = DEVICE_MAJOR;
 	ResetBuffer();
-	printk(KERN_INFO "  I was assigned major number %d.\n", Major);
+	printk(KERN_INFO "Loading module keypad16\n");
+	printk(KERN_INFO "I was assigned major number %d.\n", Major);
+
+	/* create the /proc files */
+        Our_Proc_Dir  = proc_mkdir(PROCFS_DIR, NULL);
+        if ( Our_Proc_Dir == NULL ) {
+                printk(KERN_ALERT "Error: Could not create dir /proc/%s\n",
+                        PROCFS_DIR);
+                return -ENOMEM;
+        }
+/*
+	struct proc_dir_entry *myproc_dir;
+	myproc = proc_mkdir(PROCFS_DIR, NULL);
+	if (myproc==NULL) {
+	    printk(KERN_ERR "Could not create proc entry '%s'\n", PROCFS_DIR);
+	    return -ENOMEM;
+  	}
+  	printk(KERN_INFO "Proc entry '%s' created\n", PROCFS_DIR);
+
+	myproc = proc_create(PROCFS_DIR, 0, NULL, &keypad_proc_fops );
+	if (myproc==NULL) {
+    printk(KERN_ERR "Could not create proc entry '%s'\n", PROCFS_DIR);
+    return -ENOMEM;
+  }
+  printk(KERN_INFO "Proc entry '%s' created\n", PROCFS_DIR);
+*/
+
+	create_proc_file(&Our_Proc_Table,     PROCFS_TABLE, keypad_proc_table_open, &keypad_proc_table_fops );
+	create_proc_file(&Our_Proc_Buffer,    PROCFS_BUFFER, keypad_proc_buffer_open, &keypad_proc_buffer);
+	create_proc_file(&Our_Proc_RepFirst,  PROCFS_FIRST, keypad_proc_first_open, &keypad_proc_first);
+	create_proc_file(&Our_Proc_Repeat,    PROCFS_REPEAT, keypad_proc_repeat_open, &keypad_proc_repeat);
+
 
 	/*
 	 * Set up the keypad scanner timer the first time
@@ -310,7 +572,7 @@ int __init init_module(void)
 	my_timer.expires = jiffies + SCAN_DELAY;
 	add_timer(&my_timer);
 
-	printk(KERN_INFO "  keypad16 teclas=%d\n", keypad_table_elements ); 
+	printk(KERN_INFO "keypad16 teclas=%d\n", keypad_table_elements ); 
 	return SUCCESS;
 }
 
@@ -325,6 +587,12 @@ void __exit cleanup_module(void)
 	unregister_chrdev(Major, DEVICE_NAME);
 	del_timer(&my_timer);
 
+	remove_proc_entry(PROCFS_TABLE, Our_Proc_Dir);
+	remove_proc_entry(PROCFS_BUFFER, Our_Proc_Dir);
+	remove_proc_entry(PROCFS_FIRST, Our_Proc_Dir);
+	remove_proc_entry(PROCFS_REPEAT, Our_Proc_Dir);
+
+        remove_proc_entry(PROCFS_DIR, NULL);
 	printk(KERN_INFO "Module keypad16 unloaded.\n");
 }
 
@@ -401,7 +669,7 @@ static ssize_t device_read(struct file *filp,   /* see include/linux/fs.h   */
 		 * the user data segment. 
 		 */
 		put_user(*msg_Ptr, buffer++);
-                //if ( LOCAL_ECHO ) echo_char(*msg_Ptr);
+                if ( LOCAL_ECHO ) echo_char(*msg_Ptr);
 		INC_MSG_PTR(msg_Ptr);
 		length--;
 		bytes_read++;

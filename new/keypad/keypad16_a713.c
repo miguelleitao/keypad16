@@ -5,7 +5,6 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/fs.h>
-#include <linux/sched/signal.h>
 #include <linux/tty.h>      	/* For the tty declarations */
 #include <asm/uaccess.h>	/* for put_user */
 #include <asm/io.h>
@@ -14,7 +13,7 @@
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Malta de ARCOM");
 MODULE_DESCRIPTION("Device driver for 4x4 keyboards");	/* What does this module do */
-MODULE_VERSION("a07.1.4");
+MODULE_VERSION("a07.1.3");
 
 /*  
  *  Prototypes - this would normally go in a .h file
@@ -46,17 +45,10 @@ static ssize_t device_write(struct file *, const char *, size_t, loff_t *);
 static int Major;		/* Major number assigned to our device driver */
 static int Device_Open = 0;	/* Is device open?  
 				   Used to prevent multiple access to device */
-static char msg[BUF_SIZE];	/* The msg the device will give when asked 
-				   Circular buffer */
-static char *msg_Ptr;		/* Begenning of message */
-static char *end_Ptr;		/* End of message */
-int  msg_len = 0;		/* Lenght of actual message */
 static int KeypadModel = NUM1;  /* Keyboard model identifier */
 static long  AutoRepeatFirstDelay = HZ;
 static long  AutoRepeatDelay = HZ/10;
 static char *model = "num1    ";	/* Model name parameter */
-
-//static int LOCAL_ECHO = 1;	/* Send directly to standard output */
 
 
 #define INC_MSG_PTR(ptr)	ptr = ( ptr-msg<BUF_SIZE-1 ? ptr+1 : msg );
@@ -70,11 +62,7 @@ static struct file_operations fops = {
 
 static struct timer_list my_timer;
 static unsigned int key_status = 0;
-
-/*
- * Queue of processes who want to read our device
- */
-DECLARE_WAIT_QUEUE_HEAD(WaitQ);
+static char newkey;
 
 module_param(model, charp, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
 MODULE_PARM_DESC(model, "Keyboard model name");
@@ -130,35 +118,6 @@ static keypad_table_element default_alpha2_table[]  =
 
 static int keypad_table_elements = 0;
 
-static int bytes_read = 0;
-/*
-static void echo_char(char c)
-{
-   struct tty_struct *my_tty;
-   my_tty = current->signal->tty;           // The tty for the current task
-
-   // If my_tty is NULL, the current task has no tty you can print to (this is possible,
-   // for example, if it's a daemon).  If so, there's nothing we can do.
-    //
-   if (my_tty != NULL) {
-
-      // my_tty->driver is a struct which holds the tty's functions, one of which (write)
-      // is used to write strings to the tty.  It can be used to take a string either
-      // from the user's memory segment or the kernel's memory segment.
-      //
-      // The function's 1st parameter is the tty to write to, because the same function
-      // would normally be used for all tty's of a certain type.  
-      // The 2rd parameter is a pointer to a string.
-      // The 3th parameter is the length of the string.
-       //
-      ((my_tty->driver)->write)(
-         my_tty,                 // The tty itself
-         &c,                     // String
-         1 );		         // Length
-   }
-}
-*/
-
 static void keypad_scan(void)
 {
         unsigned int local_kstatus = 0;
@@ -174,15 +133,6 @@ static void keypad_scan(void)
           row_sel = row_sel << 1;
         }
         key_status = 0x0000ffff & ~local_kstatus;
-}
-
-static void ResetBuffer(void)
-{
-        msg[0] = (char)0;
-        msg_Ptr = msg;
-        end_Ptr = msg;
-        msg_len = 0;
-        bytes_read = 0;
 }
 
 
@@ -228,31 +178,8 @@ static char keypad_char(void)
 
 static void keypad_proc(void)
 {
-	char newkey;
         keypad_scan();
         newkey = keypad_char();
-	if ( newkey!=0	)
-	{
-	    if ( msg_len <= BUF_SIZE - 2 )
-	    {
-		*end_Ptr = newkey;
-		INC_MSG_PTR(end_Ptr);
-		*end_Ptr = (char)0;
-		msg_len += 1;
-
-	    }
-	    else
-	    {
-		printk(KERN_INFO "Keypad16 Buffer full \n");
-		// beep;
-	    }
-	    /* 
-	     * Wake up all the processes in WaitQ, so if anybody is waiting for the
-	     * file, they can have it.
-	     */
-	    wake_up(&WaitQ);
-	}
-
 }
 
 
@@ -299,7 +226,6 @@ int __init init_module(void)
 	  return Major;
 	}
 	if (DEVICE_MAJOR > 0) Major = DEVICE_MAJOR;
-	ResetBuffer();
 	printk(KERN_INFO "  I was assigned major number %d.\n", Major);
 
 	/*
@@ -324,7 +250,6 @@ void __exit cleanup_module(void)
 	 */
 	unregister_chrdev(Major, DEVICE_NAME);
 	del_timer(&my_timer);
-
 	printk(KERN_INFO "Module keypad16 unloaded.\n");
 }
 
@@ -342,7 +267,6 @@ static int device_open(struct inode *inode, struct file *file)
 		return -EBUSY;
 
 	Device_Open++;
-	//ResetBuffer();		// Optional
 
 	try_module_get(THIS_MODULE);
 
@@ -374,44 +298,25 @@ static ssize_t device_read(struct file *filp,   /* see include/linux/fs.h   */
                            size_t length,       /* length of the buffer     */
                            loff_t * offset)
 {
-        /*
-         * Number of bytes actually written to the buffer
-         */
-	int bytes_read = 0;
 	if (length==0)	return 0;
-  	/* wait until there's data available (unless we do nonblocking reads) */
-	while (*offset >= msg_len)
-	{
-   	  //if (file->f_flags & O_NONBLOCK)
-    	  // return -EAGAIN;
-    	  wait_event_interruptible(WaitQ, msg_len );
-    	  if (signal_pending(current) )
-      	  	return -ERESTARTSYS;
-  	}
 
 	/* 
 	 * Actually put the data into the buffer 
 	 */
-	while (length && msg_len && *msg_Ptr) 
-	{
-		/* 
-		 * The buffer is in the user data segment, not the kernel 
-		 * segment so "*" assignment won't work.  We have to use 
-		 * put_user which copies data from the kernel data segment to
-		 * the user data segment. 
-		 */
-		put_user(*msg_Ptr, buffer++);
-                //if ( LOCAL_ECHO ) echo_char(*msg_Ptr);
-		INC_MSG_PTR(msg_Ptr);
-		length--;
-		bytes_read++;
-		msg_len--;
-	}
+
+	/* 
+	 * The buffer is in the user data segment, not the kernel 
+	 * segment so "*" assignment won't work.  We have to use 
+	 * put_user which copies data from the kernel data segment to
+	 * the user data segment. 
+	 */
+	put_user(newkey, buffer);
+	newkey = 0;
 
 	/* 
 	 * Most read functions return the number of bytes put into the buffer
 	 */
-	return bytes_read;
+	return 1;
 }
 
 /*  
