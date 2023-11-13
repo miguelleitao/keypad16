@@ -1,1 +1,0 @@
-cmd_/home/jml/keypad/keypad16_a714.ko := ld -r -m elf_i386 -T ./scripts/module-common.lds --build-id  -o /home/jml/keypad/keypad16_a714.ko /home/jml/keypad/keypad16_a714.o /home/jml/keypad/keypad16_a714.mod.o ;  true

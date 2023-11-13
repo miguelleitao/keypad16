@@ -5,6 +5,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/fs.h>
+//include <linux/sched.h>
 #include <linux/sched/signal.h>
 #include <linux/types.h>
 #include <linux/proc_fs.h>	/* Necessary because we use the proc fs */
