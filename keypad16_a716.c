@@ -21,7 +21,7 @@
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Malta de ARCOM");
 MODULE_DESCRIPTION("Device driver for 4x4 keyboards");	/* What does this module do */
-MODULE_VERSION("a07.1.5");
+MODULE_VERSION("a07.1.6");
 
 /*  
  *  Prototypes - this would normally go in a .h file
@@ -330,6 +330,8 @@ static char keypad_char_code(void)
         return keypad_newchar;
 }
 
+static struct input_dev *button_dev;
+
 static void keypad_proc(void)
 {
 	//char newkey;
@@ -352,10 +354,12 @@ static void keypad_proc(void)
                 input_report_key(keypad16_input_dev,  KEY_TAB, 0);
                 input_report_key(keypad16_input_dev,  KEY_LEFTSHIFT, 0);
             } else {
+		input_report_key(button_dev, BTN_0, 1);
+	        input_sync(button_dev);
                 /* report press of key  */
-                input_report_key(keypad16_input_dev, key_code, 1);
+                //input_report_key(keypad16_input_dev, key_code, 1);
                 /* report release of key  */
-                input_report_key(keypad16_input_dev, key_code, 0);
+                //input_report_key(keypad16_input_dev, key_code, 0);
             }
         }
       }
@@ -559,7 +563,13 @@ int __init init_module(void)
 				break;
 		}
 	}
-			
+
+button_dev = input_allocate_device();
+button_dev->evbit[0] = BIT_MASK(EV_KEY);
+button_dev->keybit[BIT_WORD(BTN_0)] = BIT_MASK(BTN_0);
+
+input_register_device(button_dev);
+
         Major = register_chrdev(DEVICE_MAJOR, DEVICE_NAME, &fops);
 
 	if (Major < 0) {
@@ -602,8 +612,10 @@ int __init init_module(void)
 
 
         keypad16_input_dev = input_allocate_device();
-        if (!keypad16_input_dev)
+        if (!keypad16_input_dev) {
+	        printk(KERN_INFO "Invalid input device\n");
                 return -ENOMEM;
+        }
         keypad16_input_dev->name = devname;
 
         /* register a input_dev for KEY_*  
