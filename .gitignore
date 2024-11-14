@@ -1,7 +1,9 @@
 *.o
 *.ko
 *.mod.c
+*.mod
 *.cmd
+Module.symvers
 tkey
 *-static
 tcod
