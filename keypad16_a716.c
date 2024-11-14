@@ -568,7 +568,7 @@ button_dev = input_allocate_device();
 button_dev->evbit[0] = BIT_MASK(EV_KEY);
 button_dev->keybit[BIT_WORD(BTN_0)] = BIT_MASK(BTN_0);
 
-input_register_device(button_dev);
+err = input_register_device(button_dev);
 
         Major = register_chrdev(DEVICE_MAJOR, DEVICE_NAME, &fops);
 

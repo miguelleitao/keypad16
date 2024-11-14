@@ -1,6 +1,7 @@
 *.o
 *.ko
 *.mod.c
+*.cmd
 tkey
 *-static
 tcod
