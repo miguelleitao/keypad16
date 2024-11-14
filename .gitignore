@@ -3,12 +3,11 @@
 *.mod.c
 *.mod
 *.cmd
-Module.symvers
 tkey
 *-static
 tcod
 *.order
-*.symver
+*.symvers
 new
 old
 
