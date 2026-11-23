@@ -7,13 +7,13 @@
 #include <linux/moduleparam.h>
 #include <linux/fs.h>
 #include <linux/sched.h>
+#include <linux/sched/signal.h>
 #include <linux/proc_fs.h>	/* Necessary because we use the proc fs */
 #include <linux/tty.h>      	/* For the tty declarations */
-#include <asm/uaccess.h>	/* for put_user */
 #include <asm/io.h>
 #include <linux/mutex.h>
 #include <linux/input.h>
-
+#include <linux/uaccess.h>
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Malta de Arcom");
@@ -159,8 +159,6 @@ static keypad_table_element default_alpha2_table[]  =
 
 static int keypad_table_elements = 0;
 
-static int bytes_read = 0;
-
 static void keypad_scan(void)
 {
         unsigned int local_kstatus = 0;
@@ -184,7 +182,6 @@ static void ResetBuffer(void)
         msg_Ptr = msg;
         end_Ptr = msg;
         msg_len = 0;
-        bytes_read = 0;
 }
 
 
@@ -219,7 +216,7 @@ static int keypad_key_code(unsigned int key_status)
 		key_c = keypad_table[i].key_code; 
 	        if ( key_status==scan_c ) return key_c;
 	}
-	return (char)0;
+	return 0;
 }
 
 static char keypad_char(void)
@@ -297,6 +294,7 @@ static void keypad_proc(void)
 	    	/* report release of key  */
 	    	input_report_key(keypad16_input_dev, key_code, 0);
 	    }
+	    input_sync(keypad16_input_dev);
 	}
       }
 #ifdef KEYPAD_BUFFER_CHAR
@@ -388,17 +386,14 @@ int procfile_write_table(struct file *file, const char *buffer, unsigned long co
 	char *tabp;
 	int tabi = 0;
         /* get buffer size */
-        unsigned long procfs_buffer_size = count;
-        if (procfs_buffer_size > PROCFS_MAX_SIZE ) {
-                procfs_buffer_size = PROCFS_MAX_SIZE;
-        }
+        unsigned long procfs_buffer_size = min(count, (unsigned long)PROCFS_MAX_SIZE - 1);
 
         /* write data to the buffer */
         if ( copy_from_user(procfs_buffer, buffer, procfs_buffer_size) ) {
                 return -EFAULT;
         }
 	procfs_buffer[procfs_buffer_size] = (char)0;
-        printk(KERN_INFO "Leu %ld bytes: '%s'\n",procfs_buffer_size,buffer);
+        printk(KERN_INFO "Leu %ld bytes: '%s'\n",procfs_buffer_size, procfs_buffer);
 	
 	/* parse received data and generate a new table */
 	tabp = procfs_buffer;
@@ -421,7 +416,7 @@ procfile_read_buffer(char *buffer,
 	      char **buffer_location,
 	      off_t offset, int buffer_length, int *eof, void *data)
 {
-	int ret;
+	int ret = 0;
 	
 	printk(KERN_INFO "procfile_read_buffer (/proc/%s/%s) called\n", PROCFS_DIR, PROCFS_TABLE);
 	
@@ -438,10 +433,10 @@ procfile_read_buffer(char *buffer,
 			*buf = *mptr;
 			buf++;
 			INC_MSG_PTR(mptr);
+			buffer_length--;
+			ret++;
 		}
-		ret = msg_len;
 	}
-
 	return ret;
 }
 
@@ -452,133 +447,122 @@ int procfile_write_buffer(struct file *file, const char *buffer, unsigned long c
 		   void *data)
 {
 	/* get buffer size */
-	 unsigned long procfs_buffer_size = count;
-	if (procfs_buffer_size > PROCFS_MAX_SIZE ) {
-		procfs_buffer_size = PROCFS_MAX_SIZE;
-	}
+	unsigned long procfs_buffer_size = min(count, (unsigned long)PROCFS_MAX_SIZE-1);
 	
 	/* write data to the buffer */
 	if ( copy_from_user(procfs_buffer, buffer, procfs_buffer_size) ) {
 		return -EFAULT;
 	}
-	printk(KERN_INFO "Leu %ld bytes: '%s'\n",procfs_buffer_size,buffer);
+	procfs_buffer[procfs_buffer_size] = (char)0;
+	printk(KERN_INFO "Leu %ld bytes: '%s'\n",procfs_buffer_size, procfs_buffer);
 	return procfs_buffer_size;
 }
 
 /*
  * This function is called then the /proc file is read
  */
-int
-procfile_read_first(char *buffer,
-              char **buffer_location,
-              off_t offset, int buffer_length, int *eof, void *data)
+static ssize_t
+procfile_read_first(struct file *file, 
+					char __user *buffer,
+					size_t count,
+					loff_t *ppos)
 {
-	int i;
-        char *buf;
-	char mymsg[20];
-        buf = buffer;
-	sprintf( mymsg, "%ld\n", AutoRepeatFirstDelay );
-	
-        for( i=0 ; i<strlen(mymsg) && i<buffer_length ; i++ )
-                        *(buf++) = mymsg[i];
-        return i;
+    char tmp[32];
+    int len;
+
+    len = scnprintf(tmp, sizeof(tmp), "%ld\n",
+                    AutoRepeatFirstDelay);
+
+    return simple_read_from_buffer(buffer, count, ppos,
+                                   tmp, len);
 }
 
 /*
  * This function is called then the /proc file is read
  */
-int
-procfile_read_repeat(char *buffer,
-              char **buffer_location,
-              off_t offset, int buffer_length, int *eof, void *data)
+ static ssize_t procfile_read_repeat(struct file *file,
+                                    char __user *buffer,
+                                    size_t count,
+                                    loff_t *ppos)
 {
-        int i;
-        char *buf;
-        char mymsg[20];
-        buf = buffer;
-        sprintf( mymsg, "%ld\n", AutoRepeatDelay );
+    char tmp[32];
+    int len;
 
-        for( i=0 ; i<strlen(mymsg) && i<buffer_length ; i++ )
-                        *(buf++) = mymsg[i];
-        return i;
+    len = scnprintf(tmp, sizeof(tmp), "%ld\n",
+                    AutoRepeatDelay);
+
+    return simple_read_from_buffer(buffer, count, ppos,
+                                   tmp, len);
 }
 
+static ssize_t procfile_write_repeat(struct file *file,
+                                     const char __user *buffer,
+                                     size_t count,
+                                     loff_t *ppos)
+{
+    char tmp[32];
+    unsigned long value;
+    size_t len;
+    int ret;
+
+    len = min(count, sizeof(tmp) - 1);
+
+    if (copy_from_user(tmp, buffer, len))
+        return -EFAULT;
+
+    tmp[len] = '\0';
+
+    ret = kstrtoul(tmp, 10, &value);
+    if (ret)
+        return ret;
+
+    AutoRepeatDelay = value;
+
+    return count;
+}
+
+
+static const struct file_operations proc_repeat_ops = {
+    .owner = THIS_MODULE,
+    .read  = procfile_read_repeat,
+    .write = procfile_write_repeat,
+};
 
 /*
  * This function is called when the /proc file is written
  */
-int procfile_write_first(struct file *file, const char *buffer, unsigned long count,
-                   void *data)
+static ssize_t procfile_write_first(struct file *file,
+                                    const char __user *buffer,
+                                    size_t count,
+                                    loff_t *ppos)
 {
-	char *endp;
+    char tmp[32];
+    unsigned long value;
+    size_t len;
+    int ret;
 
-        /* get buffer size */
-        unsigned long procfs_buffer_size = count;
-        if (procfs_buffer_size > PROCFS_MAX_SIZE ) {
-                procfs_buffer_size = PROCFS_MAX_SIZE;
-        }
+    len = min(count, sizeof(tmp) - 1);
 
-        /* write data to the buffer */
-        if ( copy_from_user(procfs_buffer, buffer, procfs_buffer_size) ) {
-                return -EFAULT;
-        }
-        procfs_buffer[procfs_buffer_size] = 0;
-        printk(KERN_INFO "procfile_write_first got %ld bytes: '%s'\n",procfs_buffer_size,procfs_buffer);
-	AutoRepeatFirstDelay = simple_strtoul(procfs_buffer, &endp, 10);
-	// New kernel versions shoul use: kstrtouint(procfs_buffer, 10, &AutoRepeatFirstDelay);
+    if (copy_from_user(tmp, buffer, len))
+        return -EFAULT;
 
-        return procfs_buffer_size;
+    tmp[len] = '\0';
+
+    ret = kstrtoul(tmp, 10, &value);
+    if (ret)
+        return ret;
+
+    AutoRepeatFirstDelay = value;
+
+    return count;
 }
 
-/*
- * This function is called when the /proc file is written
- */
-int procfile_write_repeat(struct file *file, const char *buffer, unsigned long count,
-                   void *data)
-{
-	char *endp;
+static const struct file_operations proc_first_ops = {
+    .owner = THIS_MODULE,
+    .read  = procfile_read_first,
+    .write = procfile_write_first,
+};
 
-        /* get buffer size */
-        unsigned long procfs_buffer_size = count;
-        if (procfs_buffer_size > PROCFS_MAX_SIZE ) {
-                procfs_buffer_size = PROCFS_MAX_SIZE;
-        }
-
-        /* write data to the buffer */
-        if ( copy_from_user(procfs_buffer, buffer, procfs_buffer_size) ) {
-                return -EFAULT;
-        }
-	procfs_buffer[procfs_buffer_size] = 0;
-        printk(KERN_INFO "procfile_write_repeat got %ld bytes: '%s'\n",procfs_buffer_size,procfs_buffer);
-        AutoRepeatDelay = simple_strtoul(procfs_buffer, &endp, 10);
-
-	// New kernel versions shoul use: kstrtouint(procfs_buffer, 10, &AutoRepeatDelay);
-        return procfs_buffer_size;
-}
-
-
-static int __init create_proc_file(struct proc_dir_entry **entry, const char* name, 
-	read_proc_t *read_func,  write_proc_t *write_func )
-{
-	(*entry) = create_proc_entry(name, 0644, Our_Proc_Dir);
-
-	if ( (*entry) == NULL ) {
-		remove_proc_entry(PROCFS_TABLE, Our_Proc_Table);
-                printk(KERN_ALERT "Error: Could not initialize /proc/%s/%s\n",
-                        PROCFS_DIR, PROCFS_TABLE);
-                return -ENOMEM;
-        }
-        (*entry)->read_proc  = read_func;
-        (*entry)->write_proc = write_func;
-        //(*entry)->owner     = THIS_MODULE;
-        (*entry)->mode      = S_IFREG | S_IRUGO;
-        (*entry)->uid       = 0;
-        (*entry)->gid       = 0;
-        (*entry)->size      = 180;
-
-        printk(KERN_INFO "  /proc/%s/%s created\n", PROCFS_DIR, name);
-	return 0;
-}
 	
 
 /*
@@ -622,19 +606,27 @@ int __init init_module(void)
 
 	/* create the /proc files */
 
-	Our_Proc_Dir  = proc_mkdir(PROCFS_DIR, NULL);
-	if ( Our_Proc_Dir == NULL ) {
-		printk(KERN_ALERT "Error: Could not create dir /proc/%s\n",
-                        PROCFS_DIR);
-		return -ENOMEM;
+	Our_Proc_Dir = proc_mkdir(PROCFS_DIR, NULL);
+	if (!Our_Proc_Dir) {
+		err = -ENOMEM;
+		goto err_unregister_chrdev;
 	}
 
-	create_proc_file(&Our_Proc_Table,     PROCFS_TABLE,  procfile_read_table,   procfile_write_table  );
-	create_proc_file(&Our_Proc_Buffer,    PROCFS_BUFFER, procfile_read_buffer,  procfile_write_buffer );
-	create_proc_file(&Our_Proc_RepFirst,  PROCFS_FIRST,  procfile_read_first,   procfile_write_first );
-	create_proc_file(&Our_Proc_Repeat,    PROCFS_REPEAT, procfile_read_repeat,  procfile_write_repeat );
+	Our_Proc_RepFirst = proc_create(PROCFS_FIRST, 0644,
+									Our_Proc_Dir,
+									&proc_first_ops);
+	if (!Our_Proc_RepFirst) {
+		err = -ENOMEM;
+		goto err_remove_proc;
+	}
 
-
+	Our_Proc_Repeat = proc_create(PROCFS_REPEAT, 0644,
+								  Our_Proc_Dir,
+								  &proc_repeat_ops);
+	if (!Our_Proc_Repeat) {
+		err = -ENOMEM;
+		goto err_remove_proc;
+	}
 	keypad16_input_dev = input_allocate_device();
 	if (!keypad16_input_dev)
 		return -ENOMEM;
@@ -664,8 +656,9 @@ int __init init_module(void)
 	set_bit(KEY_KPASTERISK, keypad16_input_dev->keybit);	
 	set_bit(KEY_TAB, keypad16_input_dev->keybit);
 	set_bit(KEY_ENTER, keypad16_input_dev->keybit);	
-        set_bit(KEY_BACKSPACE, keypad16_input_dev->keybit);
-        set_bit(KEY_LEFTSHIFT, keypad16_input_dev->keybit);
+    set_bit(KEY_BACKSPACE, keypad16_input_dev->keybit);
+    set_bit(KEY_LEFTSHIFT, keypad16_input_dev->keybit);
+	set_bit(KEY_DOT, keypad16_input_dev->keybit);
 
 	err = input_register_device(keypad16_input_dev);
 	if (err)
@@ -679,6 +672,13 @@ int __init init_module(void)
 	add_timer(&my_timer);
 
 	return SUCCESS;
+	err_remove_proc:
+		proc_remove(Our_Proc_Dir);
+		Our_Proc_Dir = NULL;
+
+	err_unregister_chrdev:
+		unregister_chrdev(Major, DEVICE_NAME);
+		return err;
 }
 
 /*
@@ -691,12 +691,8 @@ void __exit cleanup_module(void)
 	 */
 	unregister_chrdev(Major, DEVICE_NAME);
 	del_timer(&my_timer);
-	remove_proc_entry(PROCFS_TABLE, Our_Proc_Dir);
-	remove_proc_entry(PROCFS_BUFFER, Our_Proc_Dir);
-	remove_proc_entry(PROCFS_FIRST, Our_Proc_Dir);
-	remove_proc_entry(PROCFS_REPEAT, Our_Proc_Dir);
-
-        remove_proc_entry(PROCFS_DIR, NULL);
+	proc_remove(Our_Proc_Dir);
+	Our_Proc_Dir = NULL;
 	input_unregister_device(keypad16_input_dev);
 	printk(KERN_INFO "Module keypad16 unloaded.\n");
 }
