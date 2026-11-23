@@ -10,4 +10,5 @@ tcod
 *.symvers
 new
 old
+.~*
 
