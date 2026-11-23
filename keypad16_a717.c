@@ -7,7 +7,7 @@
 #include <linux/moduleparam.h>
 #include <linux/fs.h>
 #include <linux/sched.h>
-#include <linux/sched/signal.h>
+//#include <linux/sched/signal.h>
 #include <linux/proc_fs.h>	/* Necessary because we use the proc fs */
 #include <linux/tty.h>      	/* For the tty declarations */
 #include <asm/io.h>
@@ -747,21 +747,20 @@ static ssize_t device_read(struct file *filp,   /* see include/linux/fs.h   */
          * Number of bytes actually written to the buffer
          */
 	int bytes_read = 0;
+	int ret;
 	if (length==0)	return 0;
   	/* wait until there's data available (unless we do nonblocking reads) */
-	while (*offset >= msg_len)
-	{
-   	  //if (file->f_flags & O_NONBLOCK)
-    	  // return -EAGAIN;
-    	  wait_event_interruptible(WaitQ, msg_len );
-    	  if (signal_pending(current) )
-      	  	return -ERESTARTSYS;
+	while ( msg_len==0 ) {
+        if (filp->f_flags & O_NONBLOCK)
+            return -EAGAIN;
+    	ret = wait_event_interruptible(WaitQ, msg_len>0 );
+    	if ( ret ) return ret;
   	}
 
 	/* 
 	 * Actually put the data into the buffer 
 	 */
-	while (length && msg_len && *msg_Ptr) 
+	while (length>0 && msg_len>0 ) 
 	{
 		/* 
 		 * The buffer is in the user data segment, not the kernel 
@@ -769,7 +768,9 @@ static ssize_t device_read(struct file *filp,   /* see include/linux/fs.h   */
 		 * put_user which copies data from the kernel data segment to
 		 * the user data segment. 
 		 */
-		put_user(*msg_Ptr, buffer++);
+		if (put_user(*msg_Ptr, buffer))
+            return bytes_read ? bytes_read : -EFAULT;
+        buffer++;
 		INC_MSG_PTR(msg_Ptr);
 		length--;
 		bytes_read++;
